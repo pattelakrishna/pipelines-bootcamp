@@ -1,0 +1,122 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  dotnetVersion: '7.0.x'   # Adjust depending on your project SDK version
+
+stages:
+# ----------------------------
+# CI Stage
+# ----------------------------
+- stage: CI
+  displayName: "Continuous Integration"
+  jobs:
+    - job: BuildAndTest
+      displayName: "Build, Test, and Package"
+      steps:
+        - task: UseDotNet@2
+          displayName: "Install .NET SDK"
+          inputs:
+            packageType: 'sdk'
+            version: '$(dotnetVersion)'
+
+        - task: NuGetToolInstaller@1
+          displayName: "Install NuGet"
+
+        - task: NuGetCommand@2
+          displayName: "Restore NuGet packages"
+          inputs:
+            command: 'restore'
+            restoreSolution: '**/*.sln'
+
+        - task: DotNetCoreCLI@2
+          displayName: "Build solution"
+          inputs:
+            command: 'build'
+            projects: '**/*.sln'
+            arguments: '--configuration $(buildConfiguration)'
+
+        - task: DotNetCoreCLI@2
+          displayName: "Run unit tests"
+          inputs:
+            command: 'test'
+            projects: '**/*Tests/*.csproj'
+            arguments: '--configuration $(buildConfiguration) --no-build --verbosity normal'
+
+        - task: DotNetCoreCLI@2
+          displayName: "Publish web project"
+          inputs:
+            command: 'publish'
+            publishWebProjects: true
+            arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)'
+            zipAfterPublish: true
+
+        - task: PublishBuildArtifacts@1
+          displayName: "Publish pipeline artifact"
+          inputs:
+            pathToPublish: '$(Build.ArtifactStagingDirectory)'
+            artifactName: 'drop'
+            publishLocation: 'Container'
+
+# ----------------------------
+# CD Stage
+# ----------------------------
+- stage: CD
+  displayName: "Continuous Deployment"
+  dependsOn: CI
+  jobs:
+    - deployment: DeployDev
+      displayName: "Deploy to Azure App Service (Dev)"
+      environment: 'dev'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - download: current
+                artifact: drop
+              - task: AzureWebApp@1
+                displayName: "Deploy to Dev"
+                inputs:
+                  azureSubscription: 'YOUR-SERVICE-CONNECTION'
+                  appName: 'your-appservice-dev'
+                  package: '$(Pipeline.Workspace)/drop/**/*.zip'
+
+    - deployment: DeployStaging
+      displayName: "Deploy to Azure App Service (Staging)"
+      environment: 'staging'
+      dependsOn: DeployDev
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - download: current
+                artifact: drop
+              - task: AzureWebApp@1
+                displayName: "Deploy to Staging"
+                inputs:
+                  azureSubscription: 'YOUR-SERVICE-CONNECTION'
+                  appName: 'your-appservice-staging'
+                  package: '$(Pipeline.Workspace)/drop/**/*.zip'
+
+    - deployment: DeployProduction
+      displayName: "Deploy to Azure App Service (Production)"
+      environment: 'production'
+      dependsOn: DeployStaging
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+              - download: current
+                artifact: drop
+              - task: AzureWebApp@1
+                displayName: "Deploy to Production"
+                inputs:
+                  azureSubscription: 'YOUR-SERVICE-CONNECTION'
+                  appName: 'your-appservice-prod'
+                  package: '$(Pipeline.Workspace)/drop/**/*.zip'
